@@ -433,21 +433,23 @@ def get_logging_payload(  # noqa: PLR0915
         _res = _get_response_for_spend_logs_payload(
             payload=standard_logging_payload, kwargs=kwargs
         )
-        if (original_response_obj is not None 
-            and mcp_namespaced_tool_name is not None 
-            and standard_logging_payload is not None 
+        if (
+            original_response_obj is not None
+            and mcp_namespaced_tool_name is not None
+            and standard_logging_payload is not None
             and not standard_logging_payload.get("response", {})
-            and isinstance(original_response_obj, list) 
+            and isinstance(original_response_obj, list)
             and len(original_response_obj) > 0
         ):
             # for mcp tool response
-            _res = json.dumps({
-                "mcp_tool_response": [
-                    m.model_dump()
-                    if isinstance(m, BaseModel) else str(m)
-                    for m in original_response_obj
-                ]
-            })
+            _res = json.dumps(
+                {
+                    "mcp_tool_response": [
+                        m.model_dump() if isinstance(m, BaseModel) else str(m)
+                        for m in original_response_obj
+                    ]
+                }
+            )
         payload: SpendLogsPayload = SpendLogsPayload(
             request_id=str(id),
             call_type=call_type or "",
@@ -629,6 +631,9 @@ async def get_spend_by_team_and_customer(
     return db_response
 
 
+_CALL_TYPES_WITH_MESSAGES_LOGGING = frozenset({"_arealtime", "responses", "aresponses"})
+
+
 def _get_messages_for_spend_logs_payload(
     standard_logging_payload: Optional[StandardLoggingPayload],
     metadata: Optional[dict] = None,
@@ -636,10 +641,12 @@ def _get_messages_for_spend_logs_payload(
     if _should_store_prompts_and_responses_in_spend_logs():
         if standard_logging_payload is not None:
             call_type = standard_logging_payload.get("call_type", "")
-            if call_type == "_arealtime":
+            if call_type in _CALL_TYPES_WITH_MESSAGES_LOGGING:
                 messages = standard_logging_payload.get("messages")
                 if messages is not None:
                     try:
+                        if isinstance(messages, str):
+                            return messages
                         return json.dumps(messages, default=str)
                     except Exception:
                         return "{}"

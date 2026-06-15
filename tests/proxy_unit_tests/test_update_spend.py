@@ -352,11 +352,19 @@ def test_prisma_client_jsonify_object_strips_json_escaped_null_in_preserialized_
             "request_id": "clean-id",
         },
     )
-    assert "\\u0000" not in result["metadata"], "pre-serialized \\u0000 must be stripped from metadata"
+    assert (
+        "\\u0000" not in result["metadata"]
+    ), "pre-serialized \\u0000 must be stripped from metadata"
     assert "\x00" not in result["metadata"]
-    assert "\\u0000" not in result["response"], "pre-serialized \\u0000 must be stripped from response"
+    assert (
+        "\\u0000" not in result["response"]
+    ), "pre-serialized \\u0000 must be stripped from response"
     assert "\x00" not in result["response"]
-    assert "value" in result["metadata"] or "valye" in result["metadata"] or '"key"' in result["metadata"]
+    assert (
+        "value" in result["metadata"]
+        or "valye" in result["metadata"]
+        or '"key"' in result["metadata"]
+    )
 
 
 def test_prisma_client_jsonify_object_strips_null_bytes_from_dicts():
@@ -416,6 +424,135 @@ async def test_update_spend_logs_strips_null_bytes_before_db_write():
     assert "\x00" not in row["request_id"]
     assert "\x00" not in row["messages"]
     assert "\x00" not in row["metadata"]
-    assert "\\u0000" not in row["metadata"], "JSON-escaped null must be stripped from pre-serialized metadata"
+    assert (
+        "\\u0000" not in row["metadata"]
+    ), "JSON-escaped null must be stripped from pre-serialized metadata"
     assert "\x00" not in row["response"]
-    assert "\\u0000" not in row["response"], "JSON-escaped null must be stripped from pre-serialized response"
+    assert (
+        "\\u0000" not in row["response"]
+    ), "JSON-escaped null must be stripped from pre-serialized response"
+
+
+def test_prisma_client_jsonify_object_serializes_list_values():
+    """PrismaClient.jsonify_object must serialize Python list values to JSON strings.
+
+    Before the fix, list values passed through unchanged and could cause a Prisma
+    DataError when the list contained non-JSON-serializable objects (e.g. Pydantic
+    models). After the fix, lists are serialized to JSON strings just like dicts.
+    """
+    result = PrismaClient.jsonify_object(
+        None,
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "metadata": {"key": "value"},
+            "spend": 1.5,
+        },
+    )
+    import json as _json
+
+    # messages (list) must be a JSON string now
+    assert isinstance(result["messages"], str), "list must be serialized to JSON string"
+    parsed = _json.loads(result["messages"])
+    assert parsed == [{"role": "user", "content": "hello"}]
+
+    # metadata (dict) must also be serialized
+    assert isinstance(result["metadata"], str)
+    parsed_meta = _json.loads(result["metadata"])
+    assert parsed_meta == {"key": "value"}
+
+    # non-string scalars pass through
+    assert result["spend"] == 1.5
+
+
+def test_prisma_client_jsonify_object_serializes_list_with_non_serializable():
+    """jsonify_object must use default=str to handle non-JSON-serializable objects in lists."""
+
+    class _Obj:
+        def __str__(self):
+            return "custom_obj"
+
+    result = PrismaClient.jsonify_object(
+        None,
+        {
+            "messages": [{"role": "user", "content": _Obj()}],
+        },
+    )
+    import json as _json
+
+    assert isinstance(result["messages"], str)
+    parsed = _json.loads(result["messages"])
+    assert parsed[0]["content"] == "custom_obj"
+
+
+def test_get_messages_for_spend_logs_payload_responses_call_type():
+    """_get_messages_for_spend_logs_payload must handle 'responses' and 'aresponses' call types.
+
+    Before the fix, gpt-5.4 calls bridged to the Responses API set call_type='responses',
+    which was not handled — the function returned '{}' regardless of STORE_PROMPTS setting.
+    After the fix, both 'responses' and 'aresponses' are handled and messages are serialized.
+    """
+    import json as _json
+    from unittest.mock import patch
+    from litellm.proxy.spend_tracking.spend_tracking_utils import (
+        _get_messages_for_spend_logs_payload,
+    )
+
+    messages_payload = [{"role": "user", "content": "what is 2+2?"}]
+
+    for call_type in ("responses", "aresponses", "_arealtime"):
+        standard_logging_payload = {
+            "call_type": call_type,
+            "messages": messages_payload,
+        }
+        with patch(
+            "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs",
+            return_value=True,
+        ):
+            result = _get_messages_for_spend_logs_payload(standard_logging_payload)
+
+        assert isinstance(result, str), f"must return str for call_type={call_type}"
+        assert result != "{}", f"must not return empty JSON for call_type={call_type}"
+        parsed = _json.loads(result)
+        assert (
+            parsed == messages_payload
+        ), f"unexpected result for call_type={call_type}"
+
+
+def test_get_messages_for_spend_logs_payload_unknown_call_type_returns_empty():
+    """_get_messages_for_spend_logs_payload must return '{}' for non-whitelisted call types."""
+    from unittest.mock import patch
+    from litellm.proxy.spend_tracking.spend_tracking_utils import (
+        _get_messages_for_spend_logs_payload,
+    )
+
+    standard_logging_payload = {
+        "call_type": "completion",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    with patch(
+        "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs",
+        return_value=True,
+    ):
+        result = _get_messages_for_spend_logs_payload(standard_logging_payload)
+
+    assert result == "{}"
+
+
+def test_get_messages_for_spend_logs_payload_disabled_returns_empty():
+    """When STORE_PROMPTS is off, must return '{}' regardless of call_type."""
+    from unittest.mock import patch
+    from litellm.proxy.spend_tracking.spend_tracking_utils import (
+        _get_messages_for_spend_logs_payload,
+    )
+
+    standard_logging_payload = {
+        "call_type": "responses",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    with patch(
+        "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs",
+        return_value=False,
+    ):
+        result = _get_messages_for_spend_logs_payload(standard_logging_payload)
+
+    assert result == "{}"

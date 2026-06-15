@@ -2407,10 +2407,14 @@ def jsonify_object(data: dict) -> dict:
     db_data = copy.deepcopy(data)
 
     for k, v in db_data.items():
-        if isinstance(v, dict):
+        if isinstance(v, (dict, list)):
             try:
                 # json.dumps encodes \x00 as the 6-char escape \u0000; strip both forms
-                db_data[k] = json.dumps(v).replace("\\u0000", "").replace("\x00", "")
+                db_data[k] = (
+                    json.dumps(v, default=str)
+                    .replace("\\u0000", "")
+                    .replace("\x00", "")
+                )
             except Exception:
                 # This avoids Prisma retrying this 5 times, and making 5 clients
                 db_data[k] = "failed-to-serialize-json"
@@ -2603,11 +2607,13 @@ class PrismaClient:
         db_data = copy.deepcopy(data)
 
         for k, v in db_data.items():
-            if isinstance(v, dict):
+            if isinstance(v, (dict, list)):
                 try:
                     # json.dumps encodes \x00 as the 6-char escape \u0000; strip both forms
                     db_data[k] = (
-                        json.dumps(v).replace("\\u0000", "").replace("\x00", "")
+                        json.dumps(v, default=str)
+                        .replace("\\u0000", "")
+                        .replace("\x00", "")
                     )
                 except Exception:
                     # This avoids Prisma retrying this 5 times, and making 5 clients
